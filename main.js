@@ -1,11 +1,11 @@
 
-/* Tunti – Web Prototype (Multiplayer + Data)
+/* Tunti – Web Prototype (Multiplayer + Data + Turn-lock Patch)
  * Language: မြန်မာ UI
  * Author: You + Copilot
  */
 
 // ======================== CONFIG ========================
-// Firebase Config (သင့် Project အချက်အလက်များဖြင့် ပြင်ပါ)
+// Firebase Config (သင့် Project အချက်အလက်များဖြင့် ပြင်ပါ; Offline စမ်းသပ်နိုင်)
 const firebaseConfig = {
   apiKey: "REPLACE_ME",
   authDomain: "REPLACE_ME.firebaseapp.com",
@@ -19,6 +19,7 @@ const firebaseConfig = {
 
 const WIDTH = 18;
 const HEIGHT = 12;
+
 const EMOJI = {
   plains: "🟩", forest: "🌲", mountain: "⛰️", water: "🌊", city: "🏛️",
   farm: "🌾", lumber: "🪵", market: "🛍️", barracks: "⚔️", port: "⚓",
@@ -40,16 +41,18 @@ const COSTS = {
   },
   train: {
     infantry: { rice: 10, gold: 10 },
-    archer: { timber: 10, gold: 15 },
-    cavalry: { rice: 20, gold: 30 },
-    ship: { timber: 40, gold: 20 },
+    archer:   { timber: 10, gold: 15 },
+    cavalry:  { rice: 20, gold: 30 },
+    ship:     { timber: 40, gold: 20 },
   },
 };
+
 const PRODUCTION = {
-  farm: { rice: 8 },
+  farm:   { rice: 8 },
   lumber: { timber: 6 },
   market: { gold: 6, spices: 2 },
 };
+
 const UNIT_STATS = {
   infantry: { atk: 2, def: 2, move: 1, kind: "land" },
   archer:   { atk: 3, def: 1, move: 1, kind: "land" },
@@ -84,21 +87,34 @@ let state = {
 // ===================== FIREBASE SETUP ===================
 let db = null;
 function initFirebase() {
-  if (!firebaseConfig || firebaseConfig.apiKey === "REPLACE_ME") {
-    console.warn("⚠️ Firebase config not set. Online disabled.");
-    setConnStatus("Offline (Config မပြင်ရသေး)");
-    return;
+  try {
+    if (!firebaseConfig || firebaseConfig.apiKey === "REPLACE_ME") {
+      console.warn("⚠️ Firebase config not set. Online disabled.");
+      db = null;
+      setConnStatus("Offline (Config မပြင်ရသေး)");
+      return;
+    }
+    if (typeof firebase === "undefined") {
+      console.warn("⚠️ Firebase SDK not loaded. Include CDN scripts in index.html.");
+      db = null;
+      setConnStatus("Offline (SDK မတင်ရသေး)");
+      return;
+    }
+    const app = firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+    setConnStatus("Ready (Firebase)");
+  } catch (e) {
+    console.error("Firebase init error:", e);
+    db = null;
+    setConnStatus("Offline (Init error)");
   }
-  const app = firebase.initializeApp(firebaseConfig);
-  db = firebase.database();
-  setConnStatus("Ready (Firebase)");
 }
 // Helpers for UI
-function setConnStatus(msg){ document.getElementById("connStatus").textContent = "Status: " + msg; }
+function setConnStatus(msg){ const el = document.getElementById("connStatus"); if (el) el.textContent = "Status: " + msg; }
 function setRoleInfo(){ 
   const p = state.online.myPlayerId;
-  const role = p === 0 ? "Player 0 (မြန်မာ)" : p === 1 ? "Player 1 (ထိုင်း)" : "Spectator";
-  document.getElementById("roleInfo").textContent = "Role: " + role;
+  const role = p === 0 ? "Player 0 (မြန်မာ)" : p === 1 ? "Player 1 (ထိုင်း)" : "Spectator/Offline";
+  const el = document.getElementById("roleInfo"); if (el) el.textContent = "Role: " + role;
 }
 
 // =================== MAP INITIALIZATION =================
@@ -147,58 +163,72 @@ function giveInitialTerritory(tiles, c, owner, r) {
 // ========================= RENDER =======================
 function render() {
   const mapEl = document.getElementById("map");
-  mapEl.innerHTML = "";
-  state.tiles.forEach((t, i) => {
-    const tile = document.createElement("div");
-    const cls = ["tile", t.terrain];
-    if (t.owner !== null) cls.push(`own-${t.owner}`);
-    if (state.selected.tileIndex === i) cls.push("selected");
-    if (t.isCity) cls.push("city");
-    tile.className = cls.join(" ");
-    tile.title = `(${t.x},${t.y}) ${t.terrain}${t.owner !== null ? " / "+PLAYERS[t.owner].name:""}`;
+  if (mapEl) {
+    mapEl.innerHTML = "";
+    state.tiles.forEach((t, i) => {
+      const tile = document.createElement("div");
+      const cls = ["tile", t.terrain];
+      if (t.owner !== null) cls.push(`own-${t.owner}`);
+      if (state.selected.tileIndex === i) cls.push("selected");
+      if (t.isCity) cls.push("city");
+      tile.className = cls.join(" ");
+      tile.title = `(${t.x},${t.y}) ${t.terrain}${t.owner !== null ? " / "+PLAYERS[t.owner].name:""}`;
 
-    // badge
-    const badge = document.createElement("div");
-    badge.className = "badge";
-    if (t.isCity) badge.textContent = EMOJI.city + " City";
-    else if (t.building) badge.textContent = EMOJI[t.building] + " " + t.building;
-    tile.appendChild(badge);
+      // badge
+      const badge = document.createElement("div");
+      badge.className = "badge";
+      if (t.isCity) badge.textContent = EMOJI.city + " City";
+      else if (t.building) badge.textContent = EMOJI[t.building] + " " + t.building;
+      tile.appendChild(badge);
 
-    // owner ring
-    const ring = document.createElement("div"); ring.className = "owner-ring"; tile.appendChild(ring);
+      // owner ring
+      const ring = document.createElement("div"); ring.className = "owner-ring"; tile.appendChild(ring);
 
-    // unit
-    const unitEl = document.createElement("div"); unitEl.className = "unit";
-    unitEl.textContent = t.unit ? (EMOJI[t.unit.type] + " HP:" + t.unit.hp) : "";
-    tile.appendChild(unitEl);
+      // unit
+      const unitEl = document.createElement("div"); unitEl.className = "unit";
+      unitEl.textContent = t.unit ? (EMOJI[t.unit.type] + " HP:" + t.unit.hp) : "";
+      tile.appendChild(unitEl);
 
-    tile.addEventListener("click", () => onTileClick(i));
-    mapEl.appendChild(tile);
-  });
+      tile.addEventListener("click", () => onTileClick(i));
+      mapEl.appendChild(tile);
+    });
+  }
 
-  document.getElementById("turnInfo").textContent =
+  const turnInfo = document.getElementById("turnInfo");
+  if (turnInfo) turnInfo.textContent =
     `လက်ရှိတစ်ဝှမ်း: Turn ${state.turn} – ${PLAYERS[state.currentPlayer].name}`;
+
+  const resEl = document.getElementById("resources");
   const r = state.resources[state.currentPlayer];
-  document.getElementById("resources").textContent =
+  if (resEl) resEl.textContent =
     `အရင်းအမြစ်: 🌾 ${r.rice} | 🪵 ${r.timber} | 🛍️ ${r.spices} | 💰 ${r.gold}`;
-  document.getElementById("kingdomInfo").innerHTML = `
+
+  const kInfo = document.getElementById("kingdomInfo");
+  if (kInfo) kInfo.innerHTML = `
     <strong>${PLAYERS[0].name}</strong> Capital HP: ${PLAYERS[0].capitalHP}<br/>
     <strong>${PLAYERS[1].name}</strong> Capital HP: ${PLAYERS[1].capitalHP}
   `;
-  document.getElementById("productionInfo").innerHTML = `
+
+  const prodEl = document.getElementById("productionInfo");
+  if (prodEl) prodEl.innerHTML = `
     🌾 +${PRODUCTION.farm.rice} rice/turn ・ 🪵 +${PRODUCTION.lumber.timber} timber/turn ・
     🛍️ +${PRODUCTION.market.gold} gold & +${PRODUCTION.market.spices} spices/turn
   `;
+
   updateSelectedPanel();
 }
 function updateSelectedPanel() {
   const sel = state.selected.tileIndex;
   const t = sel != null ? state.tiles[sel] : null;
-  document.getElementById("selectedTile").textContent =
+  const selTileEl = document.getElementById("selectedTile");
+  const selUnitEl = document.getElementById("selectedUnit");
+
+  if (selTileEl) selTileEl.textContent =
     sel == null
       ? "ရွေးထားသော Tile: မရှိသေး"
       : `Tile (${t.x},${t.y}) – ${t.terrain} ${t.isCity ? "(City)" : ""} ${t.building ? "/ "+t.building : ""}`;
-  document.getElementById("selectedUnit").textContent =
+
+  if (selUnitEl) selUnitEl.textContent =
     sel == null || !t.unit
       ? "ရွေးထားသော စစ်သား: မရှိသေး"
       : `Unit: ${t.unit.type} (HP ${t.unit.hp}) – Owner ${PLAYERS[t.unit.owner].name}`;
@@ -206,12 +236,23 @@ function updateSelectedPanel() {
 
 // =================== INPUT & ACTIONS ====================
 function mustBeMyTurn() {
-  if (state.online.enabled && state.online.myPlayerId !== state.currentPlayer) {
+  // ✅ Offline/No-room/No-Firebase SDK → allow actions
+  if (!state.online.enabled || !db) return true;
+
+  // ✅ Spectator (no slot) → block
+  if (state.online.myPlayerId == null) {
+    alert("Online Mode: Spectator ဖြစ်နေပါတယ်—slot တစ်ခုယူပါ။");
+    return false;
+  }
+
+  // ✅ Turn-lock check
+  if (state.online.myPlayerId !== state.currentPlayer) {
     alert("Online Mode: ကိုယ့်တစ်ဝှမ်း မဟုတ်ပါ!");
     return false;
   }
   return true;
 }
+
 function onTileClick(index) {
   const t = state.tiles[index];
   const prev = state.selected.tileIndex;
@@ -229,6 +270,7 @@ function onTileClick(index) {
   state.selected.tileIndex = index;
   render();
 }
+
 function tryMoveOrAttack(fromIdx, toIdx) {
   const from = state.tiles[fromIdx];
   const to = state.tiles[toIdx];
@@ -262,6 +304,7 @@ function tryMoveOrAttack(fromIdx, toIdx) {
     if (to.owner === null) to.owner = unit.owner;
   }
 }
+
 function resolveCombat(attacker, defender, toIdx) {
   const a = UNIT_STATS[attacker.type];
   const d = UNIT_STATS[defender.type];
@@ -289,6 +332,7 @@ function buildAt(index, type) {
   t.building = type;
   render(); pushOnlineState();
 }
+
 function trainAt(index, unitType) {
   if (!mustBeMyTurn()) return;
   const t = state.tiles[index];
@@ -304,6 +348,7 @@ function trainAt(index, unitType) {
   t.unit = { type: unitType, owner: pid, hp: 3 };
   render(); pushOnlineState();
 }
+
 function endTurn() {
   if (!mustBeMyTurn()) return;
   const pid = state.currentPlayer;
@@ -344,17 +389,23 @@ function serializeState() {
 function applyRemote(snapshotVal) {
   if (!snapshotVal) return;
   state._applyingRemote = true;
-  state.turn = snapshotVal.turn;
-  state.currentPlayer = snapshotVal.currentPlayer;
-  state.resources = snapshotVal.resources;
-  state.tiles = snapshotVal.tiles;
-  PLAYERS[0].capitalHP = snapshotVal.players?.p0 ?? PLAYERS[0].capitalHP;
-  PLAYERS[1].capitalHP = snapshotVal.players?.p1 ?? PLAYERS[1].capitalHP;
-  state._applyingRemote = false;
-  render();
+  try {
+    state.turn = snapshotVal.turn;
+    state.currentPlayer = snapshotVal.currentPlayer;
+    state.resources = snapshotVal.resources;
+    state.tiles = snapshotVal.tiles;
+    PLAYERS[0].capitalHP = snapshotVal.players?.p0 ?? PLAYERS[0].capitalHP;
+    PLAYERS[1].capitalHP = snapshotVal.players?.p1 ?? PLAYERS[1].capitalHP;
+    render();
+  } finally {
+    state._applyingRemote = false;
+    // ✅ After render, small delay then clear selection (avoid stale selection causing actions)
+    setTimeout(() => { state.selected.tileIndex = null; updateSelectedPanel(); }, 50);
+  }
 }
 function pushOnlineState(force=false) {
-  if (!state.online.enabled || !db) return;
+  // Skip if offline or applying remote (prevent loops)
+  if (!state.online.enabled || !db || state._applyingRemote) return;
   // cooldown to avoid flooding
   const now = Date.now();
   if (!force && now - state.online.lastPush < 150) return;
@@ -364,6 +415,7 @@ function pushOnlineState(force=false) {
 }
 
 async function createRoom() {
+  if (!db) { alert("Firebase မတင်ထားသေး/Config မဖြည့်ရသေး — Offline Mode"); return; }
   const code = document.getElementById("roomCode").value.trim();
   const name = document.getElementById("playerName").value.trim() || "Player";
   if (!code) return alert("Room Code ထည့်ပါ");
@@ -393,11 +445,13 @@ function listenRoom(code) {
     // update meta role text
     const roleEl = document.getElementById("roleInfo");
     const meta = val.meta || {};
-    roleEl.textContent = `Role: ${state.online.myPlayerId===0?"Player 0":"Player 1/Spectator"} | P0=${meta.p0||"-"} | P1=${meta.p1||"-"}`;
+    if (roleEl) roleEl.textContent =
+      `Role: ${state.online.myPlayerId===0?"Player 0":"Player 1/Spectator"} | P0=${meta.p0||"-"} | P1=${meta.p1||"-"}`;
   });
 }
 
 async function joinRoom() {
+  if (!db) { alert("Firebase မတင်ထားသေး/Config မဖြည့်ရသေး — Offline Mode"); return; }
   const code = document.getElementById("roomCode").value.trim();
   const name = document.getElementById("playerName").value.trim() || "Player";
   if (!code) return alert("Room Code ထည့်ပါ");
@@ -429,8 +483,9 @@ async function joinRoom() {
 }
 
 async function leaveRoom() {
+  if (!db) { setConnStatus("Offline"); state.online.enabled = false; state.online.roomCode = null; state.online.myPlayerId = null; return; }
   const code = state.online.roomCode;
-  if (!code || !db) return;
+  if (!code) return;
   const metaRef = db.ref(roomPath(code) + "/meta");
   const metaSnap = await metaRef.get();
   const meta = metaSnap.val() || {};
@@ -487,7 +542,15 @@ function resetGame(showAlert=true, seedStr=null) {
   render();
   if (showAlert) alert("Game Reset!");
 }
+
+function metaRefSafe() {
+  return (db && state.online.enabled && state.online.roomCode)
+    ? db.ref(roomPath(state.online.roomCode) + "/meta")
+    : null;
+}
+
 function bindUI() {
+  // Build buttons
   document.querySelectorAll("[data-build]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const type = btn.getAttribute("data-build");
@@ -495,6 +558,8 @@ function bindUI() {
       buildAt(sel, type);
     });
   });
+
+  // Train buttons
   document.querySelectorAll("[data-train]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const type = btn.getAttribute("data-train");
@@ -502,17 +567,43 @@ function bindUI() {
       trainAt(sel, type);
     });
   });
-  document.getElementById("endTurn").addEventListener("click", endTurn);
-  document.getElementById("resetGame").addEventListener("click", () => resetGame());
+
+  // Core actions
+  const endBtn = document.getElementById("endTurn");
+  if (endBtn) endBtn.addEventListener("click", endTurn);
+  const resetBtn = document.getElementById("resetGame");
+  if (resetBtn) resetBtn.addEventListener("click", () => resetGame());
+
   // Multiplayer buttons
-  document.getElementById("createRoom").addEventListener("click", createRoom);
-  document.getElementById("joinRoom").addEventListener("click", joinRoom);
-  document.getElementById("leaveRoom").addEventListener("click", leaveRoom);
+  const cr = document.getElementById("createRoom"); if (cr) cr.addEventListener("click", createRoom);
+  const jr = document.getElementById("joinRoom");   if (jr) jr.addEventListener("click", joinRoom);
+  const lr = document.getElementById("leaveRoom");  if (lr) lr.addEventListener("click", leaveRoom);
+
+  // Optional: manual role take (HTML ထဲမှာ ID တွေရှိရင်သာ အလုပ်လုပ်မယ်)
+  const takeP0 = document.getElementById("takeP0");
+  if (takeP0) takeP0.addEventListener("click", async () => {
+    const metaRef = metaRefSafe();
+    if (!metaRef) { state.online.myPlayerId = 0; setRoleInfo(); return; }
+    const snap = await metaRef.get(); const meta = snap.val() || {};
+    if (!meta.p0) await metaRef.update({ p0: state.online.myName || "Player" });
+    state.online.myPlayerId = 0; setRoleInfo(); pushOnlineState(true);
+  });
+
+  const takeP1 = document.getElementById("takeP1");
+  if (takeP1) takeP1.addEventListener("click", async () => {
+    const metaRef = metaRefSafe();
+    if (!metaRef) { state.online.myPlayerId = 1; setRoleInfo(); return; }
+    const snap = await metaRef.get(); const meta = snap.val() || {};
+    if (!meta.p1) await metaRef.update({ p1: state.online.myName || "Player" });
+    state.online.myPlayerId = 1; setRoleInfo(); pushOnlineState(true);
+  });
+
   // Data
-  document.getElementById("saveLocal").addEventListener("click", saveLocal);
-  document.getElementById("loadLocal").addEventListener("click", loadLocal);
-  document.getElementById("exportJSON").addEventListener("click", exportJSON);
-  document.getElementById("importJSON").addEventListener("change", (e) => {
+  const sv = document.getElementById("saveLocal"); if (sv) sv.addEventListener("click", saveLocal);
+  const ld = document.getElementById("loadLocal"); if (ld) ld.addEventListener("click", loadLocal);
+  const ex = document.getElementById("exportJSON"); if (ex) ex.addEventListener("click", exportJSON);
+  const im = document.getElementById("importJSON");
+  if (im) im.addEventListener("change", (e) => {
     const file = e.target.files[0]; if (file) importJSONFile(file);
     e.target.value = "";
   });
